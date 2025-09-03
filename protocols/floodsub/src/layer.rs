@@ -109,6 +109,7 @@ impl Behaviour {
                             topic,
                             action: FloodsubSubscriptionAction::Subscribe,
                         }],
+                        max_message_len: self.config.max_message_len,
                     },
                 });
             }
@@ -145,6 +146,7 @@ impl Behaviour {
                         topic: topic.clone(),
                         action: FloodsubSubscriptionAction::Subscribe,
                     }],
+                    max_message_len: self.config.max_message_len,
                 },
             });
         }
@@ -175,6 +177,7 @@ impl Behaviour {
                         topic: topic.clone(),
                         action: FloodsubSubscriptionAction::Unsubscribe,
                     }],
+                    max_message_len: self.config.max_message_len,
                 },
             });
         }
@@ -274,6 +277,7 @@ impl Behaviour {
                 event: FloodsubRpc {
                     subscriptions: Vec::new(),
                     messages: vec![message.clone()],
+                    max_message_len: self.config.max_message_len,
                 },
             });
         }
@@ -304,6 +308,7 @@ impl Behaviour {
                             topic,
                             action: FloodsubSubscriptionAction::Subscribe,
                         }],
+                        max_message_len: self.config.max_message_len,
                     },
                 });
             }
@@ -349,7 +354,10 @@ impl NetworkBehaviour for Behaviour {
         _: &Multiaddr,
         _: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(Default::default())
+        Ok(OneShotHandler::new(
+            libp2p_swarm::SubstreamProtocol::new(FloodsubProtocol::new(&self.config), ()),
+            Default::default(),
+        ))
     }
 
     fn handle_established_outbound_connection(
@@ -360,7 +368,10 @@ impl NetworkBehaviour for Behaviour {
         _: Endpoint,
         _: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(Default::default())
+        Ok(OneShotHandler::new(
+            libp2p_swarm::SubstreamProtocol::new(FloodsubProtocol::new(&self.config), ()),
+            Default::default(),
+        ))
     }
 
     fn on_connection_handler_event(
@@ -471,6 +482,7 @@ impl NetworkBehaviour for Behaviour {
                         FloodsubRpc {
                             subscriptions: Vec::new(),
                             messages: vec![message.clone()],
+                            max_message_len: self.config.max_message_len,
                         },
                     ));
                 }

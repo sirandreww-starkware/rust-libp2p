@@ -55,13 +55,21 @@ pub struct Config {
     /// `true` if messages published by local node should be propagated as messages received from
     /// the network, `false` by default.
     pub subscribe_local_messages: bool,
+
+    /// Maximum message length in bytes (default is 2048).
+    /// This is the maximum size of the entire protobuf RPC message, including all overhead.
+    pub max_message_len: usize,
 }
 
 impl Config {
+    /// Default maximum message length in bytes.
+    pub const DEFAULT_MAX_MESSAGE_LEN: usize = 2048;
+
     pub fn new(local_peer_id: PeerId) -> Self {
         Self {
             local_peer_id,
             subscribe_local_messages: false,
+            max_message_len: Self::DEFAULT_MAX_MESSAGE_LEN,
         }
     }
 }

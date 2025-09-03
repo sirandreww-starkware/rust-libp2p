@@ -30,20 +30,31 @@ use libp2p_core::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
 use libp2p_identity::PeerId;
 use libp2p_swarm::StreamProtocol;
 
-use crate::{proto, topic::Topic};
-
-const MAX_MESSAGE_LEN_BYTES: usize = 2048;
+use crate::{proto, topic::Topic, Config};
 
 const PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/floodsub/1.0.0");
 
 /// Implementation of `ConnectionUpgrade` for the floodsub protocol.
-#[derive(Debug, Clone, Default)]
-pub struct FloodsubProtocol {}
+#[derive(Debug, Clone)]
+pub struct FloodsubProtocol {
+    /// Maximum message length in bytes.
+    max_message_len: usize,
+}
 
 impl FloodsubProtocol {
-    /// Builds a new `FloodsubProtocol`.
-    pub fn new() -> FloodsubProtocol {
-        FloodsubProtocol {}
+    /// Builds a new `FloodsubProtocol` with the given configuration.
+    pub fn new(config: &Config) -> FloodsubProtocol {
+        FloodsubProtocol {
+            max_message_len: config.max_message_len,
+        }
+    }
+}
+
+impl Default for FloodsubProtocol {
+    fn default() -> Self {
+        Self {
+            max_message_len: Config::DEFAULT_MAX_MESSAGE_LEN,
+        }
     }
 }
 
@@ -68,7 +79,7 @@ where
         Box::pin(async move {
             let mut framed = Framed::new(
                 socket,
-                quick_protobuf_codec::Codec::<proto::RPC>::new(MAX_MESSAGE_LEN_BYTES),
+                quick_protobuf_codec::Codec::<proto::RPC>::new(self.max_message_len),
             );
 
             let rpc = framed
@@ -102,6 +113,7 @@ where
                         topic: Topic::new(sub.topic_id.unwrap_or_default()),
                     })
                     .collect(),
+                max_message_len: self.max_message_len,
             })
         })
     }
@@ -119,6 +131,9 @@ pub enum FloodsubError {
     /// Error when reading the packet from the socket.
     #[error("Failed to read from socket")]
     ReadError(#[from] io::Error),
+    /// Error when message size exceeds the configured limit.
+    #[error("Message size {actual} bytes exceeds maximum of {max} bytes")]
+    MessageTooLarge { actual: usize, max: usize },
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -132,6 +147,8 @@ pub struct FloodsubRpc {
     pub messages: Vec<FloodsubMessage>,
     /// List of subscriptions.
     pub subscriptions: Vec<FloodsubSubscription>,
+    /// Maximum message length for validation (used in OutboundUpgrade).
+    pub max_message_len: usize,
 }
 
 impl UpgradeInfo for FloodsubRpc {
@@ -155,7 +172,7 @@ where
         Box::pin(async move {
             let mut framed = Framed::new(
                 socket,
-                quick_protobuf_codec::Codec::<proto::RPC>::new(MAX_MESSAGE_LEN_BYTES),
+                quick_protobuf_codec::Codec::<proto::RPC>::new(self.max_message_len),
             );
             framed.send(self.into_rpc()).await?;
             framed.close().await?;
