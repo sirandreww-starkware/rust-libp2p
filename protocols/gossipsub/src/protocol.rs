@@ -180,6 +180,16 @@ pub struct GossipsubCodec {
     max_transmit_sizes: HashMap<TopicHash, usize>,
 }
 
+/// Result of message validation
+#[derive(Debug)]
+enum ValidationResult {
+    Valid {
+        source: Option<PeerId>,
+        sequence_number: Option<u64>,
+    },
+    Invalid(ValidationError),
+}
+
 impl GossipsubCodec {
     pub fn new(
         max_length: usize,
@@ -194,9 +204,129 @@ impl GossipsubCodec {
         }
     }
 
-    /// Get the max transmit size for a given topic if it exists.
-    fn max_transmit_size_for_topic(&self, topic: &TopicHash) -> Option<usize> {
-        self.max_transmit_sizes.get(topic).copied()
+    /// Validates a message according to the given validation mode and size limits.
+    /// Returns ValidationResult::Valid with extracted source and sequence number if valid,
+    /// or ValidationResult::Invalid with the validation error if invalid.
+    fn validate_message(
+        validation_mode: ValidationMode,
+        max_transmit_sizes: &HashMap<TopicHash, usize>,
+        message: &proto::Message,
+    ) -> ValidationResult {
+        let topic = TopicHash::from_raw(&message.topic);
+
+        // Check the message size to ensure it doesn't bypass the configured max.
+        if let Some(max_size) = max_transmit_sizes.get(&topic) {
+            if message.get_size() > *max_size {
+                return ValidationResult::Invalid(ValidationError::MessageSizeTooLargeForTopic);
+            }
+        }
+        // Keep track of the type of invalid message.
+        let mut invalid_kind = None;
+        let mut verify_signature = false;
+        let mut verify_sequence_no = false;
+        let mut verify_source = false;
+
+        match validation_mode {
+            ValidationMode::Strict => {
+                // Validate everything
+                verify_signature = true;
+                verify_sequence_no = true;
+                verify_source = true;
+            }
+            ValidationMode::Permissive => {
+                // If the fields exist, validate them
+                if message.signature.is_some() {
+                    verify_signature = true;
+                }
+                if message.seqno.is_some() {
+                    verify_sequence_no = true;
+                }
+                if message.from.is_some() {
+                    verify_source = true;
+                }
+            }
+            ValidationMode::Anonymous => {
+                if message.signature.is_some() {
+                    tracing::warn!(
+                        "Signature field was non-empty and anonymous validation mode is set"
+                    );
+                    invalid_kind = Some(ValidationError::SignaturePresent);
+                } else if message.seqno.is_some() {
+                    tracing::warn!(
+                        "Sequence number was non-empty and anonymous validation mode is set"
+                    );
+                    invalid_kind = Some(ValidationError::SequenceNumberPresent);
+                } else if message.from.is_some() {
+                    tracing::warn!("Message dropped. Message source was non-empty and anonymous validation mode is set");
+                    invalid_kind = Some(ValidationError::MessageSourcePresent);
+                }
+            }
+            ValidationMode::None => {}
+        }
+
+        // If the initial validation logic failed, return the error
+        if let Some(validation_error) = invalid_kind.take() {
+            return ValidationResult::Invalid(validation_error);
+        }
+
+        // verify message signatures if required
+        if verify_signature && !GossipsubCodec::verify_signature(message) {
+            tracing::warn!("Invalid signature for received message");
+            return ValidationResult::Invalid(ValidationError::InvalidSignature);
+        }
+
+        // ensure the sequence number is a u64
+        let sequence_number = if verify_sequence_no {
+            if let Some(seq_no) = &message.seqno {
+                if seq_no.is_empty() {
+                    None
+                } else if seq_no.len() != 8 {
+                    tracing::debug!(
+                        sequence_number=?seq_no,
+                        sequence_length=%seq_no.len(),
+                        "Invalid sequence number length for received message"
+                    );
+                    return ValidationResult::Invalid(ValidationError::InvalidSequenceNumber);
+                } else {
+                    // valid sequence number
+                    Some(BigEndian::read_u64(seq_no))
+                }
+            } else {
+                // sequence number was not present
+                tracing::debug!("Sequence number not present but expected");
+                return ValidationResult::Invalid(ValidationError::EmptySequenceNumber);
+            }
+        } else {
+            // Do not verify the sequence number, consider it empty
+            None
+        };
+
+        // Verify the message source if required
+        let source = if verify_source {
+            if let Some(bytes) = &message.from {
+                if !bytes.is_empty() {
+                    match PeerId::from_bytes(bytes) {
+                        Ok(peer_id) => Some(peer_id), // valid peer id
+                        Err(_) => {
+                            // invalid peer id
+                            tracing::debug!("Message source has an invalid PeerId");
+                            return ValidationResult::Invalid(ValidationError::InvalidPeerId);
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        ValidationResult::Valid {
+            source,
+            sequence_number,
+        }
     }
 
     /// Verifies a gossipsub message. This returns either a success or failure. All errors
@@ -279,197 +409,56 @@ impl Decoder for GossipsubCodec {
         let mut invalid_messages = Vec::new();
 
         for message in rpc.publish.into_iter() {
-            let topic = TopicHash::from_raw(&message.topic);
-
-            // Check the message size to ensure it doesn't bypass the configured max.
-            if self
-                .max_transmit_size_for_topic(&topic)
-                .is_some_and(|max| message.get_size() > max)
-            {
-                let message = RawMessage {
-                    source: None, // don't bother inform the application
-                    data: message.data.unwrap_or_default(),
-                    sequence_number: None, // don't inform the application
-                    topic: TopicHash::from_raw(message.topic),
-                    signature: None, // don't inform the application
-                    key: message.key,
-                    validated: false,
-                };
-
-                invalid_messages.push((message, ValidationError::MessageSizeTooLargeForTopic));
-                continue;
-            }
-
-            // Keep track of the type of invalid message.
-            let mut invalid_kind = None;
-            let mut verify_signature = false;
-            let mut verify_sequence_no = false;
-            let mut verify_source = false;
-
-            match self.validation_mode {
-                ValidationMode::Strict => {
-                    // Validate everything
-                    verify_signature = true;
-                    verify_sequence_no = true;
-                    verify_source = true;
+            // Validate the message using the extracted validation function
+            match Self::validate_message(
+                self.validation_mode.clone(),
+                &self.max_transmit_sizes,
+                &message,
+            ) {
+                ValidationResult::Valid {
+                    source,
+                    sequence_number,
+                } => {
+                    // This message has passed all validation, add it to the validated messages.
+                    messages.push(RawMessage {
+                        source,
+                        data: message.data.unwrap_or_default(),
+                        sequence_number,
+                        topic: TopicHash::from_raw(message.topic),
+                        signature: message.signature,
+                        key: message.key,
+                        validated: false,
+                    });
                 }
-                ValidationMode::Permissive => {
-                    // If the fields exist, validate them
-                    if message.signature.is_some() {
-                        verify_signature = true;
-                    }
-                    if message.seqno.is_some() {
-                        verify_sequence_no = true;
-                    }
-                    if message.from.is_some() {
-                        verify_source = true;
-                    }
-                }
-                ValidationMode::Anonymous => {
-                    if message.signature.is_some() {
-                        tracing::warn!(
-                            "Signature field was non-empty and anonymous validation mode is set"
-                        );
-                        invalid_kind = Some(ValidationError::SignaturePresent);
-                    } else if message.seqno.is_some() {
-                        tracing::warn!(
-                            "Sequence number was non-empty and anonymous validation mode is set"
-                        );
-                        invalid_kind = Some(ValidationError::SequenceNumberPresent);
-                    } else if message.from.is_some() {
-                        tracing::warn!("Message dropped. Message source was non-empty and anonymous validation mode is set");
-                        invalid_kind = Some(ValidationError::MessageSourcePresent);
-                    }
-                }
-                ValidationMode::None => {}
-            }
+                ValidationResult::Invalid(validation_error) => {
+                    // Build the invalid message
+                    // Preserve signature for certain validation errors to match old behavior
+                    let signature = match validation_error {
+                        ValidationError::MessageSizeTooLargeForTopic
+                        | ValidationError::SignaturePresent
+                        | ValidationError::SequenceNumberPresent
+                        | ValidationError::MessageSourcePresent
+                        | ValidationError::TransformFailed
+                        | ValidationError::InvalidSignature => None,
+                        ValidationError::InvalidSequenceNumber
+                        | ValidationError::EmptySequenceNumber
+                        | ValidationError::InvalidPeerId => message.signature.clone(),
+                    };
 
-            // If the initial validation logic failed, add the message to invalid messages and
-            // continue processing the others.
-            if let Some(validation_error) = invalid_kind.take() {
-                let message = RawMessage {
-                    source: None, // don't bother inform the application
-                    data: message.data.unwrap_or_default(),
-                    sequence_number: None, // don't inform the application
-                    topic: TopicHash::from_raw(message.topic),
-                    signature: None, // don't inform the application
-                    key: message.key,
-                    validated: false,
-                };
-                invalid_messages.push((message, validation_error));
-                // proceed to the next message
-                continue;
-            }
-
-            // verify message signatures if required
-            if verify_signature && !GossipsubCodec::verify_signature(&message) {
-                tracing::warn!("Invalid signature for received message");
-                // Build the invalid message (ignoring further validation of sequence number
-                // and source)
-                let message = RawMessage {
-                    source: None, // don't bother inform the application
-                    data: message.data.unwrap_or_default(),
-                    sequence_number: None, // don't inform the application
-                    topic: TopicHash::from_raw(message.topic),
-                    signature: None, // don't inform the application
-                    key: message.key,
-                    validated: false,
-                };
-                invalid_messages.push((message, ValidationError::InvalidSignature));
-                // proceed to the next message
-                continue;
-            }
-
-            // ensure the sequence number is a u64
-            let sequence_number = if verify_sequence_no {
-                if let Some(seq_no) = message.seqno {
-                    if seq_no.is_empty() {
-                        None
-                    } else if seq_no.len() != 8 {
-                        tracing::debug!(
-                            sequence_number=?seq_no,
-                            sequence_length=%seq_no.len(),
-                            "Invalid sequence number length for received message"
-                        );
-
-                        let message = RawMessage {
-                            source: None, // don't bother inform the application
-                            data: message.data.unwrap_or_default(),
-                            sequence_number: None, // don't inform the application
-                            topic: TopicHash::from_raw(message.topic),
-                            signature: message.signature, // don't inform the application
-                            key: message.key,
-                            validated: false,
-                        };
-                        invalid_messages.push((message, ValidationError::InvalidSequenceNumber));
-                        // proceed to the next message
-                        continue;
-                    } else {
-                        // valid sequence number
-                        Some(BigEndian::read_u64(&seq_no))
-                    }
-                } else {
-                    // sequence number was not present
-                    tracing::debug!("Sequence number not present but expected");
-                    let message = RawMessage {
+                    let raw_message = RawMessage {
                         source: None, // don't bother inform the application
                         data: message.data.unwrap_or_default(),
                         sequence_number: None, // don't inform the application
                         topic: TopicHash::from_raw(message.topic),
-                        signature: message.signature, // don't inform the application
+                        signature,
                         key: message.key,
                         validated: false,
                     };
-                    invalid_messages.push((message, ValidationError::EmptySequenceNumber));
+                    invalid_messages.push((raw_message, validation_error));
+                    // proceed to the next message
                     continue;
                 }
-            } else {
-                // Do not verify the sequence number, consider it empty
-                None
-            };
-
-            // Verify the message source if required
-            let source = if verify_source {
-                if let Some(bytes) = message.from {
-                    if !bytes.is_empty() {
-                        match PeerId::from_bytes(&bytes) {
-                            Ok(peer_id) => Some(peer_id), // valid peer id
-                            Err(_) => {
-                                // invalid peer id, add to invalid messages
-                                tracing::debug!("Message source has an invalid PeerId");
-                                let message = RawMessage {
-                                    source: None, // don't bother inform the application
-                                    data: message.data.unwrap_or_default(),
-                                    sequence_number,
-                                    topic: TopicHash::from_raw(message.topic),
-                                    signature: message.signature, // don't inform the application
-                                    key: message.key,
-                                    validated: false,
-                                };
-                                invalid_messages.push((message, ValidationError::InvalidPeerId));
-                                continue;
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // This message has passed all validation, add it to the validated messages.
-            messages.push(RawMessage {
-                source,
-                data: message.data.unwrap_or_default(),
-                sequence_number,
-                topic: TopicHash::from_raw(message.topic),
-                signature: message.signature,
-                key: message.key,
-                validated: false,
-            });
+            }
         }
 
         let mut control_msgs = Vec::new();
