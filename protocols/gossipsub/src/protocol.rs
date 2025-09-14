@@ -18,7 +18,14 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::{collections::HashMap, convert::Infallible, pin::Pin};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use asynchronous_codec::{Decoder, Encoder, Framed};
 use byteorder::{BigEndian, ByteOrder};
@@ -62,7 +69,7 @@ pub(crate) const FLOODSUB_PROTOCOL: ProtocolId = ProtocolId {
 };
 
 /// Implementation of [`InboundUpgrade`] and [`OutboundUpgrade`] for the Gossipsub protocol.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProtocolConfig {
     /// The Gossipsub protocol id to listen on.
     pub(crate) protocol_ids: Vec<ProtocolId>,
@@ -72,6 +79,17 @@ pub struct ProtocolConfig {
     pub(crate) default_max_transmit_size: usize,
     /// The max transmit sizes for a topic.
     pub(crate) max_transmit_sizes: HashMap<TopicHash, usize>,
+    /// Optional spawner for message verification.
+    pub(crate) message_verification_spawner: Option<
+        Arc<
+            dyn Fn(
+                    Box<dyn FnOnce() -> ValidationResult + Send>,
+                ) -> Pin<Box<dyn Future<Output = ValidationResult> + Send>>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    >,
 }
 
 impl Default for ProtocolConfig {
@@ -85,7 +103,23 @@ impl Default for ProtocolConfig {
             ],
             default_max_transmit_size: 65536,
             max_transmit_sizes: HashMap::new(),
+            message_verification_spawner: None,
         }
+    }
+}
+
+impl std::fmt::Debug for ProtocolConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProtocolConfig")
+            .field("protocol_ids", &self.protocol_ids)
+            .field("validation_mode", &self.validation_mode)
+            .field("default_max_transmit_size", &self.default_max_transmit_size)
+            .field("max_transmit_sizes", &self.max_transmit_sizes)
+            .field(
+                "message_verification_spawner",
+                &self.message_verification_spawner.is_some(),
+            )
+            .finish()
     }
 }
 
@@ -139,6 +173,7 @@ where
                     self.default_max_transmit_size,
                     self.validation_mode,
                     self.max_transmit_sizes,
+                    self.message_verification_spawner,
                 ),
             ),
             protocol_id.kind,
@@ -162,6 +197,7 @@ where
                     self.default_max_transmit_size,
                     self.validation_mode,
                     self.max_transmit_sizes,
+                    self.message_verification_spawner,
                 ),
             ),
             protocol_id.kind,
@@ -178,11 +214,22 @@ pub struct GossipsubCodec {
     codec: quick_protobuf_codec::Codec<proto::RPC>,
     /// Maximum transmit sizes per topic, with a default if not specified.
     max_transmit_sizes: HashMap<TopicHash, usize>,
+    /// Optional spawner for message verification.
+    message_verification_spawner: Option<
+        Arc<
+            dyn Fn(
+                    Box<dyn FnOnce() -> ValidationResult + Send>,
+                ) -> Pin<Box<dyn Future<Output = ValidationResult> + Send>>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    >,
 }
 
 /// Result of message validation
 #[derive(Debug)]
-enum ValidationResult {
+pub enum ValidationResult {
     Valid {
         source: Option<PeerId>,
         sequence_number: Option<u64>,
@@ -195,12 +242,24 @@ impl GossipsubCodec {
         max_length: usize,
         validation_mode: ValidationMode,
         max_transmit_sizes: HashMap<TopicHash, usize>,
+        message_verification_spawner: Option<
+            Arc<
+                dyn Fn(
+                        Box<dyn FnOnce() -> ValidationResult + Send>,
+                    )
+                        -> Pin<Box<dyn Future<Output = ValidationResult> + Send>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        >,
     ) -> GossipsubCodec {
         let codec = quick_protobuf_codec::Codec::new(max_length);
         GossipsubCodec {
             validation_mode,
             codec,
             max_transmit_sizes,
+            message_verification_spawner,
         }
     }
 
@@ -408,13 +467,70 @@ impl Decoder for GossipsubCodec {
         // Store any invalid messages.
         let mut invalid_messages = Vec::new();
 
-        for message in rpc.publish.into_iter() {
-            // Validate the message using the extracted validation function
-            match Self::validate_message(
-                self.validation_mode.clone(),
-                &self.max_transmit_sizes,
-                &message,
-            ) {
+        // Collect validation results and corresponding messages
+        let mut validation_results = Vec::new();
+        let mut validation_futures = Vec::new();
+        let messages_to_process: Vec<_> = rpc.publish.into_iter().collect();
+
+        for message in &messages_to_process {
+            if let Some(spawner) = &self.message_verification_spawner {
+                // Use spawner - defer validation
+                let validation_mode = self.validation_mode.clone();
+                let max_transmit_sizes = self.max_transmit_sizes.clone();
+                let message_clone = message.clone();
+                let future = spawner(Box::new(move || {
+                    Self::validate_message(validation_mode, &max_transmit_sizes, &message_clone)
+                }));
+                validation_futures.push(future);
+            } else {
+                // No spawner - validate immediately
+                let result = Self::validate_message(
+                    self.validation_mode.clone(),
+                    &self.max_transmit_sizes,
+                    message,
+                );
+                validation_results.push(result);
+            }
+        }
+
+        // Poll all validation futures until completion
+        if !validation_futures.is_empty() {
+            let waker = futures::task::noop_waker();
+            let mut context = Context::from_waker(&waker);
+            let mut future_results: Vec<Option<ValidationResult>> =
+                (0..validation_futures.len()).map(|_| None).collect();
+
+            // Poll until all futures are ready
+            loop {
+                let mut all_ready = true;
+                for (i, future) in validation_futures.iter_mut().enumerate() {
+                    if future_results[i].is_none() {
+                        match future.as_mut().poll(&mut context) {
+                            Poll::Ready(result) => {
+                                future_results[i] = Some(result);
+                            }
+                            Poll::Pending => {
+                                all_ready = false;
+                                std::thread::yield_now();
+                            }
+                        }
+                    }
+                }
+                if all_ready {
+                    break;
+                }
+            }
+
+            // Move future results into the main validation_results vector
+            validation_results.extend(future_results.into_iter().map(|r| r.unwrap()));
+        }
+
+        // Process all validation results uniformly
+        for (message, validation_result) in messages_to_process
+            .into_iter()
+            .zip(validation_results.into_iter())
+        {
+            match validation_result {
                 ValidationResult::Valid {
                     source,
                     sequence_number,
@@ -455,8 +571,6 @@ impl Decoder for GossipsubCodec {
                         validated: false,
                     };
                     invalid_messages.push((raw_message, validation_error));
-                    // proceed to the next message
-                    continue;
                 }
             }
         }
@@ -650,8 +764,12 @@ mod tests {
                 timeout: Delay::new(Duration::from_secs(1)),
             };
 
-            let mut codec =
-                GossipsubCodec::new(u32::MAX as usize, ValidationMode::Strict, HashMap::new());
+            let mut codec = GossipsubCodec::new(
+                u32::MAX as usize,
+                ValidationMode::Strict,
+                HashMap::new(),
+                None,
+            );
             let mut buf = BytesMut::new();
             codec.encode(rpc.into_protobuf(), &mut buf).unwrap();
             let decoded_rpc = codec.decode(&mut buf).unwrap().unwrap();
