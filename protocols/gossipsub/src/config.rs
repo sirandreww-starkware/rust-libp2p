@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::HashMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use libp2p_identity::PeerId;
 use libp2p_swarm::StreamProtocol;
@@ -133,6 +133,17 @@ pub struct Config {
     idontwant_message_size_threshold: usize,
     idontwant_on_publish: bool,
     topic_configuration: TopicConfigs,
+    message_verification_spawner: Option<
+        Arc<
+            dyn Fn(
+                    Box<dyn FnOnce() -> crate::protocol::ValidationResult + Send>,
+                )
+                    -> Pin<Box<dyn Future<Output = crate::protocol::ValidationResult> + Send>>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    >,
 }
 
 impl Config {
@@ -476,6 +487,27 @@ impl Config {
     pub fn idontwant_on_publish(&self) -> bool {
         self.idontwant_on_publish
     }
+
+    /// Optional spawner for message verification.
+    ///
+    /// This allows users to provide a custom spawner that takes a closure and runs it,
+    /// returning a future that resolves to a ValidationResult. This can be used to run
+    /// message verification on a different thread or async runtime.
+    pub fn message_verification_spawner(
+        &self,
+    ) -> Option<
+        &Arc<
+            dyn Fn(
+                    Box<dyn FnOnce() -> crate::protocol::ValidationResult + Send>,
+                )
+                    -> Pin<Box<dyn Future<Output = crate::protocol::ValidationResult> + Send>>
+                + Send
+                + Sync
+                + 'static,
+        >,
+    > {
+        self.message_verification_spawner.as_ref()
+    }
 }
 
 impl Default for Config {
@@ -546,6 +578,7 @@ impl Default for ConfigBuilder {
                 idontwant_message_size_threshold: 1000,
                 idontwant_on_publish: false,
                 topic_configuration: TopicConfigs::default(),
+                message_verification_spawner: None,
             },
             invalid_protocol: false,
         }
@@ -1084,6 +1117,36 @@ impl ConfigBuilder {
         self
     }
 
+    /// Sets a custom spawner for message verification.
+    ///
+    /// The spawner takes a closure that returns a ValidationResult and should execute it,
+    /// returning a future that resolves to the result. This allows running message
+    /// verification on a different thread or async runtime. If not set, message
+    /// verification will run synchronously.
+    ///
+    /// # Example
+    /// ```rust
+    /// libp2p_gossipsub::ConfigBuilder::default()
+    ///     .message_verification_spawner(|closure| {
+    ///         Box::pin(async move { tokio::task::spawn_blocking(closure).await.unwrap() })
+    ///     })
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    pub fn message_verification_spawner<F>(&mut self, spawner: F) -> &mut Self
+    where
+        F: Fn(
+                Box<dyn FnOnce() -> crate::protocol::ValidationResult + Send>,
+            )
+                -> Pin<Box<dyn Future<Output = crate::protocol::ValidationResult> + Send>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.config.message_verification_spawner = Some(Arc::new(spawner));
+        self
+    }
+
     /// Constructs a [`Config`] from the given configuration and validates the settings.
     pub fn build(&self) -> Result<Config, ConfigBuilderError> {
         // check all constraints on config
@@ -1303,5 +1366,47 @@ mod test {
         let mut v = s.finish().to_string();
         v.push('e');
         MessageId::from(v)
+    }
+
+    #[tokio::test]
+    async fn test_message_verification_spawner_with_validation_result() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        let spawner_called = Arc::new(AtomicBool::new(false));
+        let spawner_called_clone = spawner_called.clone();
+
+        let config = ConfigBuilder::default()
+            .message_verification_spawner(move |validation_fn| {
+                spawner_called_clone.store(true, Ordering::Relaxed);
+                Box::pin(async move { validation_fn() })
+            })
+            .build()
+            .unwrap();
+
+        assert!(config.message_verification_spawner().is_some());
+
+        // Test that the spawner can be used
+        if let Some(spawner) = config.message_verification_spawner() {
+            let result = spawner(Box::new(|| crate::protocol::ValidationResult::Valid {
+                source: None,
+                sequence_number: None,
+            }));
+
+            match result.await {
+                crate::protocol::ValidationResult::Valid { .. } => {
+                    // Test passed
+                }
+                _ => panic!("Expected Valid result"),
+            }
+        }
+
+        // Verify the spawner was called
+        assert!(
+            spawner_called.load(Ordering::Relaxed),
+            "Spawner should have been called"
+        );
     }
 }
