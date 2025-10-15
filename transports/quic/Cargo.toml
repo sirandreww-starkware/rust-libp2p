@@ -15,11 +15,19 @@ if-watch = { workspace = true }
 libp2p-core = { workspace = true }
 libp2p-tls = { workspace = true }
 libp2p-identity = { workspace = true }
-quinn = { version = "0.11.6", default-features = false, features = ["rustls", "futures-io"] }
+quinn = { version = "0.11.9", default-features = false, features = [
+    "rustls",
+    "futures-io",
+] }
+quinn-proto = { version = "0.11.13", default-features = false }
 rand = "0.8.5"
 rustls = { version = "0.23.9", default-features = false }
 thiserror = { workspace = true }
-tokio = { workspace = true, default-features = false, features = ["net", "rt", "time"], optional = true }
+tokio = { workspace = true, default-features = false, features = [
+    "net",
+    "rt",
+    "time",
+], optional = true }
 tracing = { workspace = true }
 socket2 = "0.6.0"
 ring = { workspace = true }
