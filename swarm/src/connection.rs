@@ -287,7 +287,12 @@ where
             }
 
             // Poll the [`ConnectionHandler`].
-            match handler.poll(cx) {
+            // PROBE(latency-benchmark): time just the handler poll on the CPU clock.
+            let handler_poll = {
+                let _g = tracing::debug_span!("handler_poll").entered();
+                handler.poll(cx)
+            };
+            match handler_poll {
                 Poll::Pending => {}
                 Poll::Ready(ConnectionHandlerEvent::OutboundSubstreamRequest { protocol }) => {
                     let timeout = *protocol.timeout();
@@ -401,7 +406,13 @@ where
                 *shutdown = Shutdown::None;
             }
 
-            match muxing.poll_unpin(cx)? {
+            // PROBE(latency-benchmark): time just the muxer (socket I/O + frame
+            // parse) poll on the CPU clock.
+            let muxer_poll = {
+                let _g = tracing::debug_span!("muxer_poll").entered();
+                muxing.poll_unpin(cx)
+            };
+            match muxer_poll? {
                 Poll::Pending => {}
                 Poll::Ready(StreamMuxerEvent::AddressChange(address)) => {
                     handler.on_connection_event(ConnectionEvent::AddressChange(AddressChange {
