@@ -1,0 +1,6 @@
+run_idx,n_peers,rtt_ms,payload,topology,peer_idx,peer_tag,e2e_p50_us,e2e_p95_us,e2e_p99_us,e2e_max_us,completed,throughput_rps
+0,5,0,4096,homogeneous,0,fast,975,1253,1409,4173,31208,2080.53
+0,5,0,4096,homogeneous,1,slow,956,1343,1804,5832,31150,2076.67
+0,5,0,4096,homogeneous,2,slow,951,1339,1866,4460,31241,2082.73
+0,5,0,4096,homogeneous,3,slow,943,1294,1465,3360,31850,2123.33
+0,5,0,4096,homogeneous,4,slow,948,1300,1470,3053,31759,2117.27

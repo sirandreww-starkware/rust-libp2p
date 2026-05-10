@@ -1,0 +1,119 @@
+{
+  "config": {
+    "n_peers": 5,
+    "payload_bytes": 16384,
+    "concurrency_per_peer": 2,
+    "warmup_secs": 2.0,
+    "measurement_secs": 15.0
+  },
+  "central": {
+    "connection_poll": {
+      "p50_us": 13,
+      "p95_us": 75,
+      "p99_us": 94,
+      "max_us": 1077,
+      "samples": 654287,
+      "slow_count": 103998
+    },
+    "swarm_poll": {
+      "p50_us": 0,
+      "p95_us": 1,
+      "p99_us": 1,
+      "max_us": 500,
+      "samples": 292744,
+      "slow_count": 26
+    },
+    "central_task": {
+      "total_poll_count": 140468,
+      "total_poll_duration_us": 517885,
+      "mean_poll_duration_us": 3,
+      "total_slow_poll_count": 147,
+      "mean_slow_poll_duration_us": 88,
+      "total_scheduled_duration_us": 900163,
+      "mean_scheduled_duration_us": 6,
+      "total_scheduled_count": 140468
+    },
+    "connection_tasks": {
+      "total_poll_count": 502010,
+      "total_poll_duration_us": 14750781,
+      "mean_poll_duration_us": 29,
+      "total_slow_poll_count": 135884,
+      "mean_slow_poll_duration_us": 73,
+      "total_scheduled_duration_us": 61560730,
+      "mean_scheduled_duration_us": 122,
+      "total_scheduled_count": 502010
+    }
+  },
+  "peers": [
+    {
+      "index": 0,
+      "tag": "fast",
+      "e2e_latency": {
+        "p50_us": 1005,
+        "p95_us": 1265,
+        "p99_us": 1414,
+        "max_us": 3661,
+        "samples": 30277,
+        "slow_count": 0
+      },
+      "completed": 30277,
+      "throughput_rps": 2018.4666666666667
+    },
+    {
+      "index": 1,
+      "tag": "slow",
+      "e2e_latency": {
+        "p50_us": 985,
+        "p95_us": 1333,
+        "p99_us": 1597,
+        "max_us": 3581,
+        "samples": 30455,
+        "slow_count": 0
+      },
+      "completed": 30455,
+      "throughput_rps": 2030.3333333333333
+    },
+    {
+      "index": 2,
+      "tag": "slow",
+      "e2e_latency": {
+        "p50_us": 990,
+        "p95_us": 1341,
+        "p99_us": 1672,
+        "max_us": 3766,
+        "samples": 30184,
+        "slow_count": 0
+      },
+      "completed": 30184,
+      "throughput_rps": 2012.2666666666667
+    },
+    {
+      "index": 3,
+      "tag": "slow",
+      "e2e_latency": {
+        "p50_us": 980,
+        "p95_us": 1313,
+        "p99_us": 1469,
+        "max_us": 2783,
+        "samples": 30731,
+        "slow_count": 0
+      },
+      "completed": 30731,
+      "throughput_rps": 2048.733333333333
+    },
+    {
+      "index": 4,
+      "tag": "slow",
+      "e2e_latency": {
+        "p50_us": 984,
+        "p95_us": 1314,
+        "p99_us": 1490,
+        "max_us": 3196,
+        "samples": 30619,
+        "slow_count": 0
+      },
+      "completed": 30619,
+      "throughput_rps": 2041.2666666666667
+    }
+  ]
+}

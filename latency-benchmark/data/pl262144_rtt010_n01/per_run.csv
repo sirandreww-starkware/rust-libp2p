@@ -1,0 +1,2 @@
+run_idx,n_peers,rtt_ms,payload,topology,poll_p50_us,poll_p95_us,poll_p99_us,poll_max_us,poll_samples,poll_slow_count,swarm_poll_p50_us,swarm_poll_p95_us,swarm_poll_p99_us,swarm_poll_max_us,swarm_poll_samples,swarm_poll_slow_count,ct_mean_poll_us,ct_mean_scheduled_us,ct_total_poll_count,ct_total_slow_poll_count,ct_mean_slow_poll_us,cn_mean_poll_us,cn_mean_scheduled_us,cn_total_poll_count,cn_total_slow_poll_count,cn_mean_slow_poll_us,total_rps
+0,1,10,262144,homogeneous,11,228,385,1116,15710,3494,3,85,118,881,2172,431,105,20,1448,625,237,50,40,14987,3745,161,48.07

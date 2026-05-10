@@ -1,0 +1,77 @@
+{
+  "config": {
+    "n_peers": 2,
+    "payload_bytes": 16384,
+    "concurrency_per_peer": 2,
+    "warmup_secs": 2.0,
+    "measurement_secs": 15.0
+  },
+  "central": {
+    "connection_poll": {
+      "p50_us": 15,
+      "p95_us": 243,
+      "p99_us": 337,
+      "max_us": 1897,
+      "samples": 5632,
+      "slow_count": 2364
+    },
+    "swarm_poll": {
+      "p50_us": 3,
+      "p95_us": 22,
+      "p99_us": 34,
+      "max_us": 94,
+      "samples": 1914,
+      "slow_count": 3
+    },
+    "central_task": {
+      "total_poll_count": 761,
+      "total_poll_duration_us": 22631,
+      "mean_poll_duration_us": 29,
+      "total_slow_poll_count": 108,
+      "mean_slow_poll_duration_us": 70,
+      "total_scheduled_duration_us": 39225,
+      "mean_scheduled_duration_us": 51,
+      "total_scheduled_count": 761
+    },
+    "connection_tasks": {
+      "total_poll_count": 4480,
+      "total_poll_duration_us": 393521,
+      "mean_poll_duration_us": 87,
+      "total_slow_poll_count": 2459,
+      "mean_slow_poll_duration_us": 153,
+      "total_scheduled_duration_us": 564929,
+      "mean_scheduled_duration_us": 126,
+      "total_scheduled_count": 4479
+    }
+  },
+  "peers": [
+    {
+      "index": 0,
+      "tag": "fast",
+      "e2e_latency": {
+        "p50_us": 52297,
+        "p95_us": 53051,
+        "p99_us": 53542,
+        "max_us": 53837,
+        "samples": 574,
+        "slow_count": 0
+      },
+      "completed": 574,
+      "throughput_rps": 38.266666666666666
+    },
+    {
+      "index": 1,
+      "tag": "slow",
+      "e2e_latency": {
+        "p50_us": 52297,
+        "p95_us": 53084,
+        "p99_us": 53608,
+        "max_us": 53870,
+        "samples": 574,
+        "slow_count": 0
+      },
+      "completed": 574,
+      "throughput_rps": 38.266666666666666
+    }
+  ]
+}
